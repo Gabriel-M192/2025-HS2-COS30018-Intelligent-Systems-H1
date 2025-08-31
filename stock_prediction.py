@@ -22,8 +22,8 @@ import pandas as pd
 import pandas_datareader as web
 import datetime as dt
 import tensorflow as tf
-
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, LSTM, InputLayer
 
@@ -35,18 +35,137 @@ from tensorflow.keras.layers import Dense, Dropout, LSTM, InputLayer
 # If not, save the data into a directory
 #------------------------------------------------------------------------------
 # DATA_SOURCE = "yahoo"
-COMPANY = 'CBA.AX'
+# COMPANY = 'CBA.AX'
 
-TRAIN_START = '2020-01-01'     # Start date to read
-TRAIN_END = '2023-08-01'       # End date to read
+# TRAIN_START = '2020-01-01'     # Start date to read
+# TRAIN_END = '2023-08-01'       # End date to read
 
 # data = web.DataReader(COMPANY, DATA_SOURCE, TRAIN_START, TRAIN_END) # Read data using yahoo
 
 
+#Task 2
+# --- a: pecify the start date and the end date for the whole dataset as inputs ---
+
 import yfinance as yf
 
+
+def load_stock_data(symbol: str,
+                    start_date: str,
+                    end_date: str,
+                    price_col: str = "Close",
+                    nan_method: str = "ffill",
+                    split_method: str | None = None,
+                    part: str = "all",           # "train" | "test" | "all"
+                    train_size: float = 0.8,
+                    split_date: str | None = None,
+                    random_state: int = 42) -> pd.DataFrame:
+    """
+    Download raw stock data and return one cleaned DataFrame.
+    - Ensures DatetimeIndex.
+    - Validates the requested price column.
+    - Handles NaN using: 'drop' | 'ffill' | 'bfill' | 'mean'.
+    """
+    df = yf.download(symbol, start=start_date, end=end_date, progress=False)
+
+    if df is None or df.empty:
+        raise ValueError(f"No data found for {symbol} between {start_date} and {end_date}.")
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index, errors="coerce")
+    df.index.name = "Date"
+
+    if price_col not in df.columns:
+        raise KeyError(f"Price column '{price_col}' not found. Available: {list(df.columns)}")
+
+    # Handle missing values
+    if df.isnull().sum().sum() > 0:
+        if nan_method == "drop":
+            df = df.dropna()
+        elif nan_method == "ffill":
+            df = df.fillna(method="ffill")
+        elif nan_method == "bfill":
+            df = df.fillna(method="bfill")
+        elif nan_method == "mean":
+            for col in df.select_dtypes(include=["float64", "int64"]).columns:
+                df[col].fillna(df[col].mean(), inplace=True)
+        else:
+            raise ValueError(f"Unknown nan_method '{nan_method}'.")
+
+    # --- Handle splitting ---
+    if split_method is None or part == "all":
+        return df
+
+    if split_method == "date":
+        cutoff = pd.to_datetime(split_date)
+        return df[df.index <= cutoff] if part == "train" else df[df.index > cutoff]
+
+    if split_method == "ratio":
+        cut = int(len(df) * train_size)
+        return df.iloc[:cut] if part == "train" else df.iloc[cut:]
+
+    if split_method == "random":
+        from sklearn.model_selection import train_test_split
+        tr_idx, te_idx = train_test_split(df.index, train_size=train_size,
+                                          shuffle=True, random_state=random_state)
+        return df.loc[tr_idx].sort_index() if part == "train" else df.loc[te_idx].sort_index()
+
+    raise ValueError("split_method must be one of {'date','ratio','random',None}")
+
+ 
+COMPANY = "CBA.AX"
+# TRAIN_START = "2020-01-01"
+# TRAIN_END   = "2023-08-01"
+# Split by date (train until 2023-08-01, test after)
+
+
+
 # Get the data for the stock AAPL
-data = yf.download(COMPANY,TRAIN_START,TRAIN_END)
+# data = yf.download(COMPANY,TRAIN_START,TRAIN_END)
+
+
+ALL_START = "2020-01-01"
+ALL_END   = "2024-07-02"
+CUTOFF    = "2023-08-01"  
+
+# Train (<= CUTOFF)
+data = load_stock_data(
+    COMPANY, ALL_START, ALL_END,
+    price_col="Close",
+    nan_method="ffill",
+    split_method="date",
+    split_date=CUTOFF,
+    part="train"    
+)
+
+# Test (> CUTOFF)
+test_data = load_stock_data(
+    COMPANY, ALL_START, ALL_END,
+    price_col="Close",
+    nan_method="ffill",
+    split_method="date",
+    split_date=CUTOFF,
+    part="test"     
+)
+
+# Ratio 80/20 
+# data = load_stock_data(COMPANY, ALL_START, ALL_END,
+#     price_col="Close", nan_method="ffill",
+#     split_method="ratio", train_size=0.8, part="train")
+
+# test_data = load_stock_data(COMPANY, ALL_START, ALL_END,
+#     price_col="Close", nan_method="ffill",
+#     split_method="ratio", train_size=0.8, part="test")
+
+# Random 70/30
+# data = load_stock_data(COMPANY, ALL_START, ALL_END,
+#     price_col="Close", nan_method="ffill",
+#     split_method="random", train_size=0.7, random_state=42, part="train")
+
+# test_data = load_stock_data(COMPANY, ALL_START, ALL_END,
+#     price_col="Close", nan_method="ffill",
+#     split_method="random", train_size=0.7, random_state=42, part="test")
+
+
 
 #------------------------------------------------------------------------------
 # Prepare Data
@@ -59,10 +178,16 @@ data = yf.download(COMPANY,TRAIN_START,TRAIN_END)
 #------------------------------------------------------------------------------
 PRICE_VALUE = "Close"
 
-scaler = MinMaxScaler(feature_range=(0, 1)) 
+# Fit scaler on TRAIN ONLY to avoid leakage
+scaler = MinMaxScaler(feature_range=(0, 1))
+train_vals = data[PRICE_VALUE].values.reshape(-1, 1)
+scaled_train = scaler.fit_transform(train_vals).ravel()
+
+
+
 # Note that, by default, feature_range=(0, 1). Thus, if you want a different 
 # feature_range (min,max) then you'll need to specify it here
-scaled_data = scaler.fit_transform(data[PRICE_VALUE].values.reshape(-1, 1)) 
+# scaled_data = scaler.fit_transform(data[PRICE_VALUE].values.reshape(-1, 1)) 
 # Flatten and normalise the data
 # First, we reshape a 1D array(n) to 2D array(n,1)
 # We have to do that because sklearn.preprocessing.fit_transform()
@@ -84,19 +209,32 @@ PREDICTION_DAYS = 60 # Original
 # To store the training data
 x_train = []
 y_train = []
+# Build training windows
+for i in range(PREDICTION_DAYS, len(scaled_train)):
+    x_train.append(scaled_train[i - PREDICTION_DAYS:i])
+    y_train.append(scaled_train[i])
 
-scaled_data = scaled_data[:,0] # Turn the 2D array back to a 1D array
+x_train = np.array(x_train).reshape(-1, PREDICTION_DAYS, 1)
+y_train = np.array(y_train)
+# for i in range(PREDICTION_DAYS, len(scaled_train)):
+#     x_train.append(scaled_train[i - PREDICTION_DAYS:i])
+#     y_train.append(scaled_train[i])
+
+# x_train = np.array(x_train).reshape(-1, PREDICTION_DAYS, 1)
+# y_train = np.array(y_train)
+
+# scaled_data = scaled_data[:,0] # Turn the 2D array back to a 1D array
 # Prepare the data
-for x in range(PREDICTION_DAYS, len(scaled_data)):
-    x_train.append(scaled_data[x-PREDICTION_DAYS:x])
-    y_train.append(scaled_data[x])
+# for x in range(PREDICTION_DAYS, len(scaled_data)):
+#     x_train.append(scaled_data[x-PREDICTION_DAYS:x])
+#     y_train.append(scaled_data[x])
 
 # Convert them into an array
-x_train, y_train = np.array(x_train), np.array(y_train)
+# x_train, y_train = np.array(x_train), np.array(y_train)
 # Now, x_train is a 2D array(p,q) where p = len(scaled_data) - PREDICTION_DAYS
 # and q = PREDICTION_DAYS; while y_train is a 1D array(p)
 
-x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+# x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
 # We now reshape x_train into a 3D array(p, q, 1); Note that x_train 
 # is an array of p inputs with each input being a 2D array 
 
@@ -184,12 +322,11 @@ model.fit(x_train, y_train, epochs=25, batch_size=32)
 # Test the model accuracy on existing data
 #------------------------------------------------------------------------------
 # Load the test data
-TEST_START = '2023-08-02'
-TEST_END = '2024-07-02'
+
 
 # test_data = web.DataReader(COMPANY, DATA_SOURCE, TEST_START, TEST_END)
 
-test_data = yf.download(COMPANY,TEST_START,TEST_END)
+# test_data = yf.download(COMPANY,TEST_START,TEST_END)
 
 
 # The above bug is the reason for the following line of code
@@ -197,17 +334,25 @@ test_data = yf.download(COMPANY,TEST_START,TEST_END)
 
 actual_prices = test_data[PRICE_VALUE].values
 
+# Build the input series for test predictions:
+# last PREDICTION_DAYS from the end of TRAIN + all TEST
 total_dataset = pd.concat((data[PRICE_VALUE], test_data[PRICE_VALUE]), axis=0)
-
 model_inputs = total_dataset[len(total_dataset) - len(test_data) - PREDICTION_DAYS:].values
+model_inputs = model_inputs.reshape(-1, 1)
+
+
+
+
 # We need to do the above because to predict the closing price of the fisrt
 # PREDICTION_DAYS of the test period [TEST_START, TEST_END], we'll need the 
 # data from the training period
 
-model_inputs = model_inputs.reshape(-1, 1)
 # TO DO: Explain the above line
 
+# Transform using the scaler fitted on TRAIN
 model_inputs = scaler.transform(model_inputs)
+
+
 # We again normalize our closing price data to fit them into the range (0,1)
 # using the same scaler used above 
 # However, there may be a problem: scaler was computed on the basis of
@@ -224,16 +369,25 @@ model_inputs = scaler.transform(model_inputs)
 #------------------------------------------------------------------------------
 # Make predictions on test data
 #------------------------------------------------------------------------------
+
+# Create test windows
 x_test = []
-for x in range(PREDICTION_DAYS, len(model_inputs)):
-    x_test.append(model_inputs[x - PREDICTION_DAYS:x, 0])
+for i in range(PREDICTION_DAYS, len(model_inputs)):
+    x_test.append(model_inputs[i - PREDICTION_DAYS:i, 0])
+x_test = np.array(x_test).reshape(-1, PREDICTION_DAYS, 1)
 
-x_test = np.array(x_test)
-x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
-# TO DO: Explain the above 5 lines
+# x_test = []
+# for x in range(PREDICTION_DAYS, len(model_inputs)):
+#     x_test.append(model_inputs[x - PREDICTION_DAYS:x, 0])
 
+# Predict and inverse-transform
 predicted_prices = model.predict(x_test)
 predicted_prices = scaler.inverse_transform(predicted_prices)
+
+
+# TO DO: Explain the above 5 lines
+
+
 # Clearly, as we transform our data into the normalized range (0,1),
 # we now need to reverse this transformation 
 #------------------------------------------------------------------------------
@@ -251,6 +405,8 @@ plt.xlabel("Time")
 plt.ylabel(f"{COMPANY} Share Price")
 plt.legend()
 plt.show()
+
+
 
 #------------------------------------------------------------------------------
 # Predict next day
@@ -279,3 +435,6 @@ print(f"Prediction: {prediction}")
 # the stock price:
 # https://github.com/jason887/Using-Deep-Learning-Neural-Networks-and-Candlestick-Chart-Representation-to-Predict-Stock-Market
 # Can you combine these different techniques for a better prediction??
+
+
+
