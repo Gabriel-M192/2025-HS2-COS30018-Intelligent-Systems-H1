@@ -1,0 +1,14 @@
+numpy
+matplotlib
+pandas
+tensorflow
+scikit-learn
+pandas-datareader
+yfinance
+seaborn
+mplfinance
+plotly
+transformers
+torch
+shap
+requests
